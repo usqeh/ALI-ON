@@ -1,37 +1,31 @@
 --!nonstrict
 --[[
-	AngelStatueVFX  (Luau Script)
-	=============================
-	Runtime VFX for the imported hooded stone angel statue FBX (one Model of MeshParts, see EXPORT_NOTES.md).
+	AngelStatueVFX (Luau Script): runtime VFX for the hooded stone angel statue FBX (one Model of MeshParts).
 
-	SETUP
-	  1. Import the FBX (File > Import) with Anchored = On (default is off!), Merge Meshes = Off, Scale Unit = Stud,
-	     Set Pivot to Scene Origin = On: the same settings as the portal (EXPORT_NOTES.md section 2). The script
-	     anchors parts too, but a client cannot do that for the server's physics; it warns once if one is loose.
-	  2. Put this Script directly inside the imported statue Model (Workspace > <statue Model> > this Script).
-	     A Folder in Workspace that holds only statue Models works too (every statue in it animates).
-	     Placed directly in Workspace or in ServerScriptService it uses the nearest Model that owns a part named
-	     "Statue_Angel" or "Statue_Pedestal" and waits until that has streamed in. It never uses Workspace
-	     itself as root and never touches a character or NPC rig (any Model with a Humanoid).
-	  3. Set the Script's RunContext to "Client" (Properties > Behavior > RunContext): every player animates the
-	     statue locally (smooth, no network traffic, no LocalScript needed). Rojo: AngelStatueVFX.meta.json
-	     next to this file already does it. A client copy outside Workspace (a template in ReplicatedStorage)
-	     does nothing, and only one copy drives a statue.
-	  4. Recommended: Model.ModelStreamingMode = Atomic. Streaming can drop local-only property changes, so the
+	SETUP: import the FBX like the portal (EXPORT_NOTES.md section 2: Anchored = On, Merge Meshes = Off,
+	Scale Unit = Stud, Set Pivot to Scene Origin = On).
+	  1. Put this Script inside the statue Model and set its RunContext to Client (Rojo: AngelStatueVFX.meta.json
+	     does it): every player animates the statue locally, smooth and without network traffic. In a Workspace
+	     Folder that holds only statue Models it animates every statue in it. Anywhere else (Workspace,
+	     ServerScriptService, a LocalScript in StarterPlayerScripts) it drives the first Model it finds that owns
+	     a part named "Statue_Angel" or "Statue_Pedestal", waiting until one streams in; never Workspace itself,
+	     never a character or NPC rig (a Model with a Humanoid). A client copy in ReplicatedStorage or
+	     ReplicatedFirst (a template) does nothing, and only one copy drives a statue.
+	  2. Recommended: Model.ModelStreamingMode = Atomic. Streaming can drop local-only property changes, so the
 	     look (Neon, colours, collision, shadows) is re-applied whenever a part or the whole Model comes back.
-	  The statue should stay put once it is in Workspace: the orb hovers about the rest pose it had then.
-	  Fallback: as a plain server Script (RunContext Legacy/Server) it still works, but the orb CFrame and every
-	  light/colour change replicate to all clients (stutter, bandwidth). It warns once and lowers FlickerHz.
+	  The script anchors the parts too, but a client cannot do that for the server's physics: it warns once if one
+	  is loose. The orb's rest pose is kept relative to Statue_Angel, so the statue may be moved or rotated at
+	  runtime. As a server Script (RunContext Legacy/Server) it still works, but the orb CFrame and every
+	  light/colour change replicate to all clients (stutter, bandwidth): it warns once and lowers FlickerHz.
 
 	WHAT IT DOES (by part name)
 	  GLOW_<key>_*        Neon + exact palette colour, TextureID cleared, no shadow, anchored; no collision,
 	                      touch or query when smaller than GlowNoCollideBelow studs or animated.
-	  *StatueOrb*         hovers a little (OrbHoverAmplitude, keep it below the 0.08-stud gap to the hands) and
-	                      turns slowly about world up; all orb parts of one statue move together. Pulsing orange
-	                      PointLight, breathing colour, two emitters circling it leave sparkles drifting up,
-	                      star glints twinkle on its surface.
+	  *StatueOrb*         hovers a little and turns slowly about world up (all orb parts of a statue move
+	                      together); pulsing orange PointLight, breathing colour, two emitters circling in front
+	                      of it leave sparkles drifting up, star glints twinkle on its surface.
 	  *StatueEyes*        slow smoulder (colour pulse), an occasional blink, faint ember light in the hood.
-	  *StatueCracks*      slow colour pulse, in step with the orb of the same statue.
+	  *StatueCracks*      slow colour pulse, trailing the orb pulse of the same statue a little.
 	  *Flame*             small fire particles + flickering PointLight (candle flames closer than
 	                      CandleLightSpacing share one light).
 	  *JackOLantern*Face  warm flickering PointLight.
@@ -48,7 +42,7 @@ local CONFIG = {
 	GlowNeon = true,
 	GlowNoCollideBelow = 6, -- studs: smaller GLOW_ parts lose collision/touch/query
 
-	OrbHoverAmplitude = 0.06, -- studs (the modelled gap between orb and hands is >= 0.08)
+	OrbHoverAmplitude = 0.06, -- studs at the authored orb size, scaled with the orb (modelled gap to the hands >= 0.08)
 	OrbHoverSpeed = 1.8, -- radians / second
 	OrbSpinSpeed = 0.5, -- radians / second about world up (0 = no spin)
 	OrbPulseSpeed = 1.6, -- radians / second: orb light, orb colour and pedestal cracks breathe together
@@ -75,7 +69,7 @@ local CONFIG = {
 	JackOLanternLights = true,
 
 	LightShadows = false,
-	MaxLights = 12, -- hard cap on the PointLights this script creates
+	MaxLights = 12, -- hard cap on the live PointLights this script has created
 	FlickerHz = 30, -- light/colour/emitter update rate (the orb itself moves every frame)
 	ServerFlickerHz = 10, -- FlickerHz cap when running on the server (everything replicates)
 }
@@ -92,6 +86,7 @@ local COL_SMOULDER = Color3.fromHex("5a1204") -- dim end of the eye pulse
 local TEX_FIRE = "rbxasset://textures/particles/fire_main.dds"
 local TEX_SPARKLE = "rbxasset://textures/particles/sparkles_main.dds"
 local KEY_PARTS = { "Statue_Angel", "Statue_Pedestal" }
+local ORB_REF_RADIUS = 0.52 -- studs: the authored orb; hover and sparkle orbit scale with the orb's actual size
 local TAG = "ASVFX_" -- prefix of everything this script creates (makes it idempotent)
 local UP = Vector3.new(0, 1, 0)
 local LOG = "[AngelStatueVFX] "
@@ -198,8 +193,8 @@ local function findRoot(): Instance?
 	if parent and parent ~= workspace and parent:IsDescendantOf(workspace) and not inCharacter(parent) then
 		return parent
 	end
-	-- directly in Workspace / ServerScriptService / a character: the owner of a key part (false = no owner).
-	-- Listen first, then scan, so a part streaming in between is not missed.
+	-- elsewhere: the owner of the first key part found (false = no owner). Listen first, then scan, so a part
+	-- streaming in between is not missed.
 	local found: Instance | false | nil = nil
 	local conn = workspace.DescendantAdded:Connect(function(x)
 		if found == nil and isKeyPart(x) then
@@ -244,7 +239,17 @@ end
 
 local IS_CLIENT = RunService:IsClient()
 if IS_CLIENT and not script:IsDescendantOf(workspace) then
-	return -- a RunContext=Client template outside Workspace must not animate the live statue a second time
+	-- RunContext=Client scripts also run in ReplicatedStorage etc. A template there must not animate the live
+	-- statue a second time; a copy under the local Player (PlayerScripts, PlayerGui) searches Workspace instead.
+	local player = game:GetService("Players").LocalPlayer
+	if not (player and script:IsDescendantOf(player)) then
+		if not (script:IsDescendantOf(game:GetService("ReplicatedStorage"))
+			or script:IsDescendantOf(game:GetService("ReplicatedFirst"))) then
+			warn(LOG .. script:GetFullName() .. " does nothing here: put this Script inside the statue Model in"
+				.. " Workspace with RunContext=Client.")
+		end
+		return
+	end
 end
 local root = findRoot()
 if not root or root == workspace then
@@ -256,15 +261,16 @@ if not CONFIG.Enabled then
 	return
 end
 
--- registry shared by every copy/run on this machine: run ids and rest poses (a copy that takes over must
+-- registry shared by every copy/run on this machine: run ids and orb rest poses (a copy that takes over must
 -- not capture a mid-hover orb CFrame as its rest pose)
 local SHARED: any = shared
 local REG = SHARED.AngelStatueVFX
 if type(REG) ~= "table" then
-	REG = { runs = 0, rest = setmetatable({}, { __mode = "k" }) }
+	REG = { runs = 0 }
 	SHARED.AngelStatueVFX = REG
 end
-REG.runs += 1
+REG.runs = (tonumber(REG.runs) or 0) + 1
+REG.orbRest = REG.orbRest or setmetatable({}, { __mode = "k" })
 local RUN_ID = REG.runs
 
 -- One driver per statue and machine. A marker (ObjectValue) in the root and in every statue Model this copy
@@ -303,19 +309,6 @@ local function claim(container: Instance): boolean
 	return true
 end
 
-local function stillOwner(): boolean -- only positive evidence of a takeover counts
-	for container, marker in claimed do
-		if (marker.Value ~= nil and marker.Value ~= script) or container:FindFirstChild(markerName) ~= marker then
-			return false
-		end
-		local run = marker:GetAttribute("ASVFX_Run")
-		if (run ~= nil and run ~= RUN_ID) or (IS_CLIENT and container:GetAttribute("ASVFX_ServerOwned")) then
-			return false
-		end
-	end
-	return true
-end
-
 if not claim(root) then
 	return
 end
@@ -332,33 +325,83 @@ local registered: { [BasePart]: boolean } = {}
 local looks = {} -- [part] = { glowKey, animated }: what applyLook re-applies after streaming
 local anchorScopes: { [Instance]: boolean } = {} -- Models owning Statue_Angel / Statue_Pedestal
 local connections: { RBXScriptConnection } = {}
-local orbGroups = {} -- [owner] = { members, memberSet, main, center, radius, current, phase, lights, colors, orbit }
+local orbGroups = {} -- [owner] = { members, anchor, main, center, radius, current, phase, lights, colors, orbit }
 local pulsers = {} -- { part, base, mode = "eyes" | "crack", owner, seed, light, nextBlink, blinkUntil }
 local flickers = {} -- { light, brightness, speed, amount, seed }  (Brightness only: Range is never animated)
 local candleLights: { { light: PointLight, pos: Vector3 } } = {}
-local lightCount = 0
+local ownLights: { PointLight } = {}
 local now = 0
 
-local function restCFrame(part: BasePart): CFrame
-	local cf = REG.rest[part]
-	if cf == nil then
-		cf = part.CFrame
-		REG.rest[part] = cf
+-- An orb part's rest pose, kept as an offset in Statue_Angel's frame (the script never moves Statue_Angel) so
+-- the hover follows the statue when it is moved or rotated at runtime; a world CFrame until the anchor is known.
+type Rest = { anchor: BasePart?, offset: CFrame, size: Vector3? }
+local function restOf(part: BasePart): Rest
+	local r: Rest? = REG.orbRest[part]
+	if r then
+		return r
 	end
-	return cf
+	local fresh: Rest = { anchor = nil, offset = part.CFrame }
+	REG.orbRest[part] = fresh
+	return fresh
+end
+
+local function restWorld(r: Rest): CFrame
+	local a, s0, o = r.anchor, r.size, r.offset
+	if not (a and s0) then
+		return o
+	end
+	local s, p = a.Size, o.Position -- a Model:ScaleTo at runtime scales the offset with Statue_Angel
+	return a.CFrame * CFrame.new(p.X * s.X / s0.X - p.X, p.Y * s.Y / s0.Y - p.Y, p.Z * s.Z / s0.Z - p.Z) * o
+end
+
+local function rebase(r: Rest, anchor: BasePart)
+	if r.anchor ~= anchor then
+		local world = restWorld(r)
+		r.anchor, r.offset, r.size = anchor, anchor.CFrame:ToObjectSpace(world), anchor.Size
+	end
+end
+
+local function findAnchor(owner: Instance): BasePart? -- Statue_Angel of the same statue
+	for _, d in owner:GetDescendants() do
+		if d:IsA("BasePart") and has(d.Name, "Statue_Angel") and ownerOf(d) == owner and not inCharacter(d) then
+			return d
+		end
+	end
+	return nil
+end
+
+local function setAnchor(g, anchor: BasePart)
+	g.anchor = anchor
+	for _, m in g.members do
+		rebase(m.rest, anchor)
+	end
+end
+
+local function prune(list: { any }, dead: (any) -> boolean)
+	for i = #list, 1, -1 do
+		if dead(list[i]) then
+			table.remove(list, i)
+		end
+	end
 end
 
 local function addLight(parent: Instance, name: string, color: Color3, range: number, brightness: number,
 	flickerSpeed: number, flickerAmount: number): PointLight?
 	local existing = parent:FindFirstChild(TAG .. name)
 	if not (existing and existing:IsA("PointLight")) then
-		if lightCount >= CONFIG.MaxLights then
+		prune(ownLights, function(l) -- lights destroyed with their statue free their slot
+			return l.Parent == nil
+		end)
+		if #ownLights >= CONFIG.MaxLights then
 			return nil
 		end
-		lightCount += 1
 	end
-	local light = make(parent, "PointLight", name, { Color = color, Range = math.clamp(range, 1, 60),
-		Brightness = brightness, Shadows = CONFIG.LightShadows }) :: PointLight
+	local inst, created = make(parent, "PointLight", name, { Color = color, Range = math.clamp(range, 1, 60),
+		Brightness = brightness, Shadows = CONFIG.LightShadows })
+	local light = inst :: PointLight
+	if created then
+		table.insert(ownLights, light)
+	end
 	if flickerAmount > 0 then
 		table.insert(flickers, { light = light, brightness = brightness, speed = flickerSpeed, amount = flickerAmount,
 			seed = (hashString(parent:GetFullName() .. name) % 1000) / 7.31 })
@@ -485,6 +528,9 @@ end
 
 local warnedUnanchored = false
 local function register(part: BasePart)
+	if not has(part.Name, "Statue") then
+		return -- only statue parts: a shared Folder may also hold the portal's Flame/JackOLantern parts
+	end
 	local owner = ownerOf(part) or root
 	if registered[part] or inCharacter(part) or not claim(owner) then
 		return -- NPC rigs are never touched; a statue another copy drives is left to that copy
@@ -516,14 +562,17 @@ local function register(part: BasePart)
 		local g = orbGroups[owner]
 		if not g then
 			local pos = part.Position -- position-based phase: cloned statues do not bob in sync
-			g = { members = {}, memberSet = {}, lights = {}, colors = {}, dirty = true,
+			g = { members = {}, memberSet = {}, lights = {}, colors = {}, anchor = findAnchor(owner),
 				phase = (hashString(string.format("%d_%d", math.floor(pos.X), math.floor(pos.Z))) % 628) / 100 }
 			orbGroups[owner] = g
 		end
 		if not g.memberSet[part] then
+			local rest = restOf(part)
+			if g.anchor then
+				rebase(rest, g.anchor)
+			end
 			g.memberSet[part] = true
-			table.insert(g.members, { part = part, base = restCFrame(part) })
-			g.dirty = true
+			table.insert(g.members, { part = part, rest = rest })
 		end
 		if not g.main then
 			g.main = part
@@ -531,6 +580,11 @@ local function register(part: BasePart)
 		end
 		if glowKey and CONFIG.OrbColorPulse then
 			table.insert(g.colors, { part = part, base = part.Color })
+		end
+	elseif has(name, "Statue_Angel") then
+		local g = orbGroups[owner] -- Statue_Angel streamed in after the orb
+		if g and not g.anchor then
+			setAnchor(g, part)
 		end
 	end
 	if has(name, "StatueEyes") then
@@ -589,13 +643,42 @@ end))
 ------------------------------------------------------------------------------------------------------
 -- animation (one Heartbeat connection drives everything)
 ------------------------------------------------------------------------------------------------------
-local moveParts: { BasePart } = {}
-local moveCFrames: { CFrame } = {}
-local flickerAccum = 0
+local function forget(container: Instance) -- a destroyed statue: drop its animation state
+	orbGroups[container] = nil
+	local function gone(e: any): boolean
+		return e.owner == container or (e.light ~= nil and e.light.Parent == nil)
+	end
+	prune(pulsers, gone)
+	prune(flickers, gone)
+	prune(candleLights, gone)
+end
 
-local function recomputeOrb(g)
+local function stillOwner(): boolean -- only positive evidence of a takeover counts
+	for container, marker in claimed do
+		if marker.Parent == nil then
+			-- destroyed together with its statue (an Atomic stream-out keeps it inside the Model): not a takeover
+			claimed[container] = nil
+			if container.Parent == nil then
+				forget(container)
+			end
+			continue
+		end
+		if (marker.Value ~= nil and marker.Value ~= script) or container:FindFirstChild(markerName) ~= marker then
+			return false
+		end
+		local run = marker:GetAttribute("ASVFX_Run")
+		if (run ~= nil and run ~= RUN_ID) or (IS_CLIENT and container:GetAttribute("ASVFX_ServerOwned")) then
+			return false
+		end
+	end
+	return true
+end
+
+-- rest centre and radius of an orb group from its members' rest poses (rebuilt every frame: follows the statue)
+local function orbRest(g)
 	local lo: Vector3?, hi: Vector3? = nil, nil
 	for _, m in g.members do
+		m.base = restWorld(m.rest)
 		local e, p = halfExtents(m.base, m.part.Size), m.base.Position
 		lo = if lo then lo:Min(p - e) else p - e
 		hi = if hi then hi:Max(p + e) else p + e
@@ -608,12 +691,15 @@ local function recomputeOrb(g)
 			g.radius = math.max(g.radius, (m.base.Position - c).Magnitude + math.max(s.X, s.Y, s.Z) * 0.5)
 		end
 	end
-	g.dirty = false
 end
 
 local function breath(phase: number): number
 	return 0.5 + 0.5 * math.sin(now * CONFIG.OrbPulseSpeed + phase)
 end
+
+local moveParts: { BasePart } = {}
+local moveCFrames: { CFrame } = {}
+local flickerAccum = 0
 
 table.insert(connections, RunService.Heartbeat:Connect(function(dt: number)
 	now += dt
@@ -623,12 +709,11 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt: number)
 
 	-- orb: hover + slow turn about world up through its rest centre, every frame
 	for _, g in orbGroups do
-		if g.dirty then
-			recomputeOrb(g)
-		end
+		orbRest(g)
 		local c = g.center
 		if c then
-			g.current = c + UP * (math.sin(now * CONFIG.OrbHoverSpeed + g.phase) * CONFIG.OrbHoverAmplitude)
+			local amp = CONFIG.OrbHoverAmplitude * g.radius / ORB_REF_RADIUS -- keeps the gap to the hands when scaled
+			g.current = c + UP * (math.sin(now * CONFIG.OrbHoverSpeed + g.phase) * amp)
 			local xf = CFrame.new(g.current) * CFrame.Angles(0, now * CONFIG.OrbSpinSpeed, 0) * CFrame.new(-c)
 			for _, m in g.members do
 				if m.part:IsDescendantOf(workspace) then -- not while its statue has streamed out
@@ -648,12 +733,13 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt: number)
 		table.clear(moveCFrames)
 	end
 
-	-- lights, colours, emitters (throttled)
+	-- lights, colours, emitters (throttled; the remainder carries over so FlickerHz is kept on average)
+	local interval = 1 / math.max(CONFIG.FlickerHz, 1)
 	flickerAccum += dt
-	if flickerAccum < 1 / math.max(CONFIG.FlickerHz, 1) then
+	if flickerAccum < interval then
 		return
 	end
-	flickerAccum = 0
+	flickerAccum = math.min(flickerAccum - interval, interval)
 	if not stillOwner() then
 		for _, conn in connections do
 			conn:Disconnect() -- another copy, a newer run of this one, or a server copy has taken over
@@ -685,10 +771,21 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt: number)
 		end
 		local main = g.main
 		if g.orbit and g.current and main and main.Parent then
-			local a, r = now * CONFIG.OrbOrbitSpeed + g.phase, (g.radius or 0.5) + 0.3
+			-- circle the orb, pushed forward (away from Statue_Angel's centre) so its back arc stays out of the
+			-- chest and the hands; measured on the FBX: 0.1% of the path inside stone (14% when centred)
+			local s = g.radius / ORB_REF_RADIUS
+			local centre, r = g.current, g.radius + 0.15 * s
+			local d = if g.anchor then g.center - g.anchor.Position else nil
+			local fwd = if d then Vector3.new(d.X, 0, d.Z) else nil
+			if fwd and fwd.Magnitude > 0.1 then
+				centre += fwd.Unit * (0.15 * s)
+				r += 0.1 * s
+			end
+			local a = now * CONFIG.OrbOrbitSpeed + g.phase
 			for i, att in g.orbit do
 				local ang = a + (i - 1) * math.pi
-				local wp = g.current + Vector3.new(math.cos(ang) * r, r * (0.15 + 0.2 * math.sin(ang * 1.7)), math.sin(ang) * r)
+				local lift = r * (0.15 + 0.2 * math.sin(ang * 1.7))
+				local wp = centre + Vector3.new(math.cos(ang) * r, lift, math.sin(ang) * r)
 				att.Position = main.CFrame:PointToObjectSpace(wp)
 			end
 		end
@@ -699,7 +796,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt: number)
 		if part.Parent then
 			if p.mode == "crack" then
 				local g = orbGroups[p.owner]
-				local k = breath(if g then g.phase - 0.6 else p.seed) -- trails the orb slightly
+				local k = breath(if g then g.phase - 0.6 else p.seed) -- trails the orb pulse a little
 				part.Color = p.base:Lerp(PALETTE.ember, 0.5 * (1 - k))
 			else -- eyes: smoulder + an occasional blink (both eyes are one part)
 				if CONFIG.EyesPulse then
